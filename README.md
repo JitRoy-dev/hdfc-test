@@ -17,10 +17,17 @@ This microservice acts as a **pluggable auth layer** that can be deployed:
 - ✅ Bearer token validation (JWT signature, expiry, audience, issuer)
 - ✅ JWKS caching with automatic rotation
 - ✅ Session-based and stateless (bearer token) auth
+- ✅ Token refresh with secure backend exchange
 - ✅ Role-based access control (RBAC) with composable decorators
 - ✅ Scope validation for fine-grained permissions
+- ✅ User registration with email validation
+- ✅ Password management (change, reset, forgot-password)
+- ✅ Token introspection for fast local validation (< 10ms)
+- ✅ Audit logging with structured JSON events
+- ✅ Request correlation IDs for distributed tracing
+- ✅ Admin user management (CRUD operations)
 - ✅ Health check endpoints for K8s readiness probes
-- ✅ Admin endpoints for user sync and role mapping (optional)
+- ✅ Admin endpoints for user sync and role mapping
 - ✅ Environment-driven configuration (no hardcoded secrets)
 - ✅ Production-ready logging and error handling
 
@@ -32,17 +39,22 @@ This microservice acts as a **pluggable auth layer** that can be deployed:
 AS-03-Backend/
 ├── app/
 │   ├── __init__.py              (empty)
-│   ├── main.py                  (FastAPI app entry point, middleware setup)
+│   ├── main.py                  (FastAPI app, middleware setup, correlation ID)
 │   ├── config.py                (Settings, env var validation)
 │   ├── auth.py                  (OAuth, RBAC dependencies, bearer token)
 │   ├── jwt_utils.py             (JWT validation, JWKS caching)
-│   ├── routes.py                (Public & protected endpoints)
+│   ├── routes.py                (All endpoints: public, protected, admin, Phase 2)
+│   ├── audit.py                 (Audit logging, structured event tracking) [Phase 2]
+│   ├── admin.py                 (Keycloak admin API helpers)
 │   └── __pycache__/
+├── tests/
+│   └── test_jwks_cache.py       (Unit tests)
 ├── .env                         (Local dev config — DO NOT commit)
 ├── .env.example                 (Template with placeholders)
 ├── requirements.txt             (Python dependencies)
 ├── Dockerfile                   (Container image for this service)
 ├── README.md                    (This file)
+├── ROADMAP.md                   (12-week implementation roadmap)
 └── docker-compose.yml           (Optional: local Keycloak + app stack)
 ```
 
@@ -829,7 +841,9 @@ curl -i http://localhost:8000/api/data
 
 ### `app/main.py`
 - FastAPI app initialization
-- SessionMiddleware setup (secure cookies)
+- CorrelationIDMiddleware for distributed request tracing (extracts/generates X-Correlation-ID header)
+- SessionMiddleware setup (secure cookies with httpOnly flag in prod)
+- CORSMiddleware for frontend integration (configurable by ENV)
 - Route inclusion
 
 ### `app/config.py`
@@ -895,9 +909,16 @@ This project is a **production-ready, pluggable Keycloak-based auth microservice
 2. ✅ **Bearer token validation** (API flows)
 3. ✅ **RBAC** (role and scope checks)
 4. ✅ **Session & stateless auth** (both supported)
-5. ✅ **Pluggable design** (reusable, decoupled, microservices-ready)
-6. ✅ **Secure defaults** (prod validation, TLS recommendations, secret management)
-7. ✅ **Cloud-native** (health checks, containerized, K8s-ready)
+5. ✅ **Token refresh** (secure backend refresh endpoint)
+6. ✅ **User registration** (self-service signup with validation)
+7. ✅ **Password management** (change, reset, forgot-password flows)
+8. ✅ **Token introspection** (fast local JWT validation < 10ms)
+9. ✅ **Admin user management** (create, update, delete users)
+10. ✅ **Audit logging** (structured JSON logs for all security events)
+11. ✅ **Request tracing** (correlation IDs for distributed tracking)
+12. ✅ **Pluggable design** (reusable, decoupled, microservices-ready)
+13. ✅ **Secure defaults** (prod validation, TLS recommendations, secret management)
+14. ✅ **Cloud-native** (health checks, containerized, K8s-ready)
 8. ✅ **Developer-friendly** (clear examples, comprehensive docs, low cognitive load)
 
 **Ready to deploy!** 🚀
