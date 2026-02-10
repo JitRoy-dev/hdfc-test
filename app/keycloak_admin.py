@@ -5,6 +5,8 @@ This module mirrors Keycloak's group structure EXACTLY:
 - Groups
 - Sub-groups
 - Direct members only (no fake inheritance)
+
+Implements TTL-based caching for admin tokens and group data.
 """
 
 import logging
@@ -14,11 +16,16 @@ import httpx
 from cachetools import TTLCache
 
 from .config import settings
+from .exceptions import KeycloakConnectionError, UserNotFoundError
 
 logger = logging.getLogger("keycloak_admin")
 
-# Cache admin token for 5 minutes
-_token_cache = TTLCache(maxsize=1, ttl=300)
+# Cache admin token with configurable TTL
+# Admin tokens are short-lived and used for Keycloak Admin API calls
+_token_cache = TTLCache(
+    maxsize=settings.ADMIN_TOKEN_CACHE_MAXSIZE,
+    ttl=settings.ADMIN_TOKEN_CACHE_TTL
+)
 
 
 # -------------------------------------------------------------------
@@ -26,9 +33,24 @@ _token_cache = TTLCache(maxsize=1, ttl=300)
 # -------------------------------------------------------------------
 
 async def get_admin_token() -> str:
+    """
+    Get admin access token for Keycloak Admin API calls.
+    
+    Uses client_credentials grant type with admin client.
+    Token is cached for ADMIN_TOKEN_CACHE_TTL seconds (default: 5 minutes).
+    
+    Returns:
+        Admin access token string
+        
+    Raises:
+        KeycloakConnectionError: If token fetch fails
+    """
+    # Return from cache if available
     if "admin_token" in _token_cache:
+        logger.debug("Admin token cache hit")
         return _token_cache["admin_token"]
 
+    # Validate admin credentials are configured
     if not settings.KEYCLOAK_ADMIN_CLIENT_ID or not settings.KEYCLOAK_ADMIN_CLIENT_SECRET:
         raise ValueError(
             "KEYCLOAK_ADMIN_CLIENT_ID / KEYCLOAK_ADMIN_CLIENT_SECRET not set"
@@ -40,25 +62,37 @@ async def get_admin_token() -> str:
         f"/protocol/openid-connect/token"
     )
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(
-            token_url,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": settings.KEYCLOAK_ADMIN_CLIENT_ID,
-                "client_secret": settings.KEYCLOAK_ADMIN_CLIENT_SECRET,
-            },
-        )
+    try:
+        logger.info("Fetching admin token from Keycloak")
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": settings.KEYCLOAK_ADMIN_CLIENT_ID,
+                    "client_secret": settings.KEYCLOAK_ADMIN_CLIENT_SECRET,
+                },
+            )
 
-        response.raise_for_status()
-        data = response.json()
+            response.raise_for_status()
+            data = response.json()
 
-        access_token = data.get("access_token")
-        if not access_token:
-            raise ValueError("No access_token received from Keycloak")
+            access_token = data.get("access_token")
+            if not access_token:
+                raise ValueError("No access_token received from Keycloak")
 
-        _token_cache["admin_token"] = access_token
-        return access_token
+            # Cache for future requests
+            _token_cache["admin_token"] = access_token
+            logger.info(f"Admin token cached successfully (TTL: {settings.ADMIN_TOKEN_CACHE_TTL}s)")
+            
+            return access_token
+            
+    except httpx.HTTPError as e:
+        logger.error(f"Failed to fetch admin token: {e}")
+        raise KeycloakConnectionError(f"Failed to fetch admin token: {str(e)}") from e
+    except Exception as e:
+        logger.exception("Unexpected error fetching admin token")
+        raise KeycloakConnectionError(f"Unexpected error: {str(e)}") from e
 
 
 # -------------------------------------------------------------------
@@ -206,3 +240,35 @@ async def get_groups_with_members() -> List[Dict[str, Any]]:
         result.append(await build_full_group(g))
 
     return result
+
+
+# -------------------------------------------------------------------
+# CACHE MANAGEMENT
+# -------------------------------------------------------------------
+
+def clear_admin_token_cache() -> None:
+    """
+    Clear the admin token cache.
+    
+    Forces a fresh token fetch on next admin API call.
+    Useful for testing or when admin credentials change.
+    """
+    _token_cache.clear()
+    logger.info("Admin token cache cleared")
+
+
+def get_cache_info() -> Dict[str, Any]:
+    """
+    Get cache statistics for monitoring.
+    
+    Returns:
+        Dict with cache configuration and current state
+    """
+    return {
+        "admin_token_cache": {
+            "maxsize": _token_cache.maxsize,
+            "ttl": _token_cache.ttl,
+            "current_size": len(_token_cache),
+            "keys": list(_token_cache.keys())
+        }
+    }

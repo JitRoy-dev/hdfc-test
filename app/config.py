@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     # Optional admin client for Keycloak Admin REST API (used for user sync)
     KEYCLOAK_ADMIN_CLIENT_ID: str | None = None
     KEYCLOAK_ADMIN_CLIENT_SECRET: str | None = None
+    
+    # Cache TTL Settings (in seconds)
+    JWKS_CACHE_TTL: int = 600  # 10 minutes - JWKS keys rarely change
+    JWKS_CACHE_MAXSIZE: int = 2  # Small cache, only need current JWKS
+    ADMIN_TOKEN_CACHE_TTL: int = 300  # 5 minutes - admin tokens expire quickly
+    ADMIN_TOKEN_CACHE_MAXSIZE: int = 1  # Only one admin token needed
+    USER_INFO_CACHE_TTL: int = 300  # 5 minutes - user info can change
+    USER_INFO_CACHE_MAXSIZE: int = 100  # Cache up to 100 users
+    GROUP_CACHE_TTL: int = 600  # 10 minutes - group structure changes infrequently
+    GROUP_CACHE_MAXSIZE: int = 50  # Cache up to 50 groups
 
     @property
     def metadata_url(self) -> str:

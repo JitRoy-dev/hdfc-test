@@ -214,5 +214,64 @@ async def refresh_token(request: Request):
 
 @router.get("/health")
 async def health_check():
-    """Important for Docker/Kubernetes readiness probes"""
+    """
+    Health check endpoint for Docker/Kubernetes readiness probes.
+    
+    Returns:
+        Simple status object indicating service is running
+    """
     return {"status": "ok"}
+
+
+@router.get("/cache/info")
+async def cache_info(user: dict = Depends(require_role("admin"))):
+    """
+    Get cache statistics for monitoring and debugging.
+    
+    Requires 'admin' role.
+    
+    Returns:
+        Cache configuration and current state for all caches:
+        - JWKS cache (JWT validation)
+        - Admin token cache (Keycloak Admin API)
+    """
+    from .jwt_utils import get_cache_info as get_jwt_cache_info
+    from .keycloak_admin import get_cache_info as get_admin_cache_info
+    
+    return {
+        "jwt_cache": get_jwt_cache_info(),
+        "admin_cache": get_admin_cache_info(),
+        "cache_ttl_config": {
+            "jwks_ttl": settings.JWKS_CACHE_TTL,
+            "admin_token_ttl": settings.ADMIN_TOKEN_CACHE_TTL,
+            "user_info_ttl": settings.USER_INFO_CACHE_TTL,
+            "group_ttl": settings.GROUP_CACHE_TTL,
+        }
+    }
+
+
+@router.post("/cache/clear")
+async def clear_caches(user: dict = Depends(require_role("admin"))):
+    """
+    Clear all caches (JWKS, admin token).
+    
+    Requires 'admin' role.
+    
+    Useful for:
+    - Testing
+    - Forcing fresh data fetch
+    - After Keycloak configuration changes
+    
+    Returns:
+        Confirmation message
+    """
+    from .jwt_utils import clear_jwks_cache
+    from .keycloak_admin import clear_admin_token_cache
+    
+    clear_jwks_cache()
+    clear_admin_token_cache()
+    
+    return {
+        "message": "All caches cleared successfully",
+        "cleared": ["jwks_cache", "admin_token_cache"]
+    }
