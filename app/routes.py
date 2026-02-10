@@ -5,7 +5,7 @@ from fastapi.exceptions import HTTPException
 import httpx
 from .auth import oauth, require_manager, require_ceo, require_role, require_auth_bearer
 from .config import settings
-from .admin import sync_users, get_user_by_id
+from .keycloak_admin import get_groups_with_members
 
 router = APIRouter()
 
@@ -67,10 +67,33 @@ async def manager_dashboard(user: dict = Depends(require_manager)):
     return HTMLResponse("<h1>Manager Dashboard</h1><p>Welcome, Admin!</p>")
 
 @router.get("/ceo")
-def ceo_dashboard(user: dict = Depends(require_ceo)):
-    return {
-        "msg": f"Welcome CEO {user.get('preferred_username') or user.get('email')}"
-    }
+async def ceo_dashboard(user: dict = Depends(require_ceo)):
+    """
+    CEO Dashboard - Display teams and employees from Keycloak groups.
+    
+    Returns:
+        - ceo_info: Current CEO's information
+        - teams: List of teams with their members
+    """
+    try:
+        # Fetch all groups with their members
+        teams = await get_groups_with_members()
+        
+        return {
+            "ceo": {
+                "username": user.get('preferred_username') or user.get('email'),
+                "email": user.get('email'),
+                "name": user.get('name'),
+            },
+            "teams": teams,
+            "totalTeams": len(teams),
+            "totalEmployees": sum(len(team.get("members", [])) for team in teams),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch teams data: {str(e)}"
+        )
 
 
 @router.get("/api/data")
@@ -78,24 +101,6 @@ async def api_data(user: dict = Depends(require_role("manager"))):
     """Example API endpoint protected by bearer token or session requiring 'manager' role."""
     return {"data": "sensitive-data", "user": user.get("preferred_username")}
 
-
-@router.post("/admin/sync-users")
-async def admin_sync(user: dict = Depends(require_role("admin"))):
-    """Admin endpoint: trigger user sync from Keycloak admin API.
-
-    Requires the caller to have `admin` realm role.
-    """
-    result = await sync_users()
-    return result
-
-
-@router.get("/admin/user/{user_id}")
-async def admin_get_user(user_id: str, user: dict = Depends(require_role("admin"))):
-    """Admin endpoint: fetch a single user by id from Keycloak admin API."""
-    info = await get_user_by_id(user_id)
-    if not info:
-        return {"ok": False, "reason": "not found"}
-    return {"ok": True, "user": info}
 
 @router.get("/me")
 async def get_current_user(user: dict = Depends(require_auth_bearer)):

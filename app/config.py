@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from pydantic import validator
+from pydantic import field_validator, ValidationInfo
 
 
 class Settings(BaseSettings):
@@ -30,9 +30,9 @@ class Settings(BaseSettings):
             return ""
         return f"{self.KEYCLOAK_SERVER_URL}/realms/{self.KEYCLOAK_REALM}/.well-known/openid-configuration"
 
-    @validator("SESSION_SECRET_KEY", pre=True, always=True)
-    def ensure_session_secret(cls, v, values):
-        env = values.get("ENV", "dev")
+    @field_validator("SESSION_SECRET_KEY", mode='before')
+    def ensure_session_secret(cls, v, info: ValidationInfo):
+        env = info.data.get("ENV", "dev")
         if env == "prod" and not v:
             raise ValueError("SESSION_SECRET_KEY must be set in production")
         # In dev, generate a default weak secret if not provided (not for prod)

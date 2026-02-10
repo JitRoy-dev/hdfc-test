@@ -174,7 +174,7 @@ curl http://localhost:8000/health
 | Method | Path | Required Role | Description |
 |--------|------|---------------|-------------|
 | `GET`  | `/manager` | `manager` | Manager dashboard |
-| `GET`  | `/ceo` | `ceo` | CEO dashboard |
+| `GET`  | `/ceo` | `ceo` | CEO dashboard - View teams and employees from Keycloak groups |
 | `GET`  | `/api/data` | `manager` | Example protected API (returns JSON) |
 
 **Protected endpoints accept:**
