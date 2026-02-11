@@ -3,12 +3,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
-from .routes import router
+from .routes import router as api_router
+from .web_routes import router as web_router
 
 # Configure logging for production
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="Keycloak Auth Service")
+app = FastAPI(
+    title="Keycloak Auth Service",
+    description="Authentication and authorization API with Keycloak integration",
+    version="1.0.0"
+)
 
 # CORS Configuration: Allow frontend to call auth endpoints
 # In development, allow all origins; in production, specify exact frontend origin
@@ -36,5 +41,9 @@ app.add_middleware(
     same_site="lax"
 )
 
-# Register Routes
-app.include_router(router)
+# Register API Routes (always included)
+app.include_router(api_router, tags=["API"])
+
+# Register Web UI Routes (optional - comment out if you only need API)
+# These routes provide HTML pages and browser-based OAuth login flow
+app.include_router(web_router, tags=["Web UI"])
