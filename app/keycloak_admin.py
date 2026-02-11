@@ -1,14 +1,3 @@
-"""
-Keycloak Admin API client for fetching full group hierarchy with members.
-
-This module mirrors Keycloak's group structure EXACTLY:
-- Groups
-- Sub-groups
-- Direct members only (no fake inheritance)
-
-Implements TTL-based caching for admin tokens and group data.
-"""
-
 import logging
 from typing import Dict, List, Any
 

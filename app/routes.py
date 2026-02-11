@@ -259,7 +259,7 @@ async def api_data(user: Dict[str, Any] = Depends(require_role("manager"))) -> D
 @router.get("/me")
 async def get_current_user(user: Dict[str, Any] = Depends(require_auth_bearer)) -> Dict[str, Any]:
     """
-    Get current authenticated user's details with token information.
+    Get current authenticated user's details.
     Works with both session cookies and bearer tokens.
     """
     user_data = {
@@ -271,46 +271,11 @@ async def get_current_user(user: Dict[str, Any] = Depends(require_auth_bearer)) 
         "groups": user.get("groups", []),
     }
     
-    # Add token information if available
-    if user.get("access_token"):
-        user_data["token_info"] = {
-            "token_type": user.get("token_type", "Bearer"),
-            "expires_in": user.get("expires_in"),
-            "access_token": user.get("access_token"),
-            "refresh_token": user.get("refresh_token"),
-        }
-    
     return wrap_response(
         user_data,
         message="User information retrieved successfully",
         ttl=settings.USER_INFO_CACHE_TTL
     )
-
-
-@router.get("/token")
-async def get_token_info(user: Dict[str, Any] = Depends(require_auth_bearer)) -> Dict[str, Any]:
-    """
-    Get access token information for API calls.
-    Returns tokens and basic user info.
-    """
-    token_data = {
-        "access_token": user.get("access_token"),
-        "refresh_token": user.get("refresh_token"),
-        "token_type": user.get("token_type", "Bearer"),
-        "expires_in": user.get("expires_in"),
-        "user": {
-            "sub": user.get("sub"),
-            "preferred_username": user.get("preferred_username"),
-            "email": user.get("email"),
-            "roles": user.get("roles", [])
-        }
-    }
-    
-    return wrap_response(
-        token_data,
-        message="Token information retrieved successfully"
-    )
-
 
 
 @router.post("/refresh")

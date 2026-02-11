@@ -256,24 +256,45 @@ Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cC...
 **Response**:
 ```json
 {
-  "sub": "550e8400-e29b-41d4-a716-446655440000",
-  "email": "john.smith@example.com",
-  "preferred_username": "john.smith",
-  "name": "John Smith",
-  "roles": ["manager", "user"],
-  "groups": ["sales-team", "backend-squad"]
+  "success": true,
+  "message": "User information retrieved successfully",
+  "data": {
+    "sub": "550e8400-e29b-41d4-a716-446655440000",
+    "email": "john.smith@example.com",
+    "preferred_username": "john.smith",
+    "name": "John Smith",
+    "roles": ["manager", "user"],
+    "groups": ["sales-team", "backend-squad"]
+  },
+  "metadata": {
+    "timestamp": "2026-02-10T10:30:00Z",
+    "version": "1.0",
+    "ttl": {
+      "value": 300,
+      "unit": "seconds",
+      "expires_at": "2026-02-10T10:35:00Z",
+      "human_readable": "5 minutes"
+    }
+  }
 }
 ```
 
 **Response Fields**:
 | Field | Type | Description |
 |-------|------|-------------|
-| `sub` | string | Unique user ID from Keycloak |
-| `email` | string | User's email address |
-| `preferred_username` | string | Username/login name |
-| `name` | string | Full name (optional) |
-| `roles` | array | List of realm roles |
-| `groups` | array | List of groups user belongs to |
+| `success` | boolean | Always true for successful responses |
+| `message` | string | Success message |
+| `data` | object | User information object |
+| `data.sub` | string | Unique user ID from Keycloak |
+| `data.email` | string | User's email address |
+| `data.preferred_username` | string | Username/login name |
+| `data.name` | string | Full name (optional) |
+| `data.roles` | array | List of realm roles |
+| `data.groups` | array | List of groups user belongs to |
+| `metadata` | object | Response metadata |
+| `metadata.timestamp` | string | ISO-8601 timestamp |
+| `metadata.version` | string | API version |
+| `metadata.ttl` | object | Cache TTL information |
 
 **Status Codes**:
 - `200 OK` - Success
@@ -560,23 +581,41 @@ Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cC...
 **Response**:
 ```json
 {
-  "jwt_cache": {
-    "maxsize": 2,
-    "ttl": 600,
-    "current_size": 1,
-    "keys": ["jwks"]
+  "success": true,
+  "message": "Cache information retrieved successfully",
+  "data": {
+    "jwt_cache": {
+      "maxsize": 2,
+      "ttl": 600,
+      "current_size": 1,
+      "keys": ["jwks"]
+    },
+    "admin_cache": {
+      "maxsize": 1,
+      "ttl": 300,
+      "current_size": 1,
+      "keys": ["admin_token"]
+    },
+    "cache_ttl_config": {
+      "jwks_ttl": 600,
+      "jwks_ttl_human": "10 minutes",
+      "admin_token_ttl": 300,
+      "admin_token_ttl_human": "5 minutes",
+      "user_info_ttl": 300,
+      "user_info_ttl_human": "5 minutes",
+      "group_ttl": 600,
+      "group_ttl_human": "10 minutes"
+    }
   },
-  "admin_cache": {
-    "maxsize": 1,
-    "ttl": 300,
-    "current_size": 1,
-    "keys": ["admin_token"]
-  },
-  "cache_ttl_config": {
-    "jwks_ttl": 600,
-    "admin_token_ttl": 300,
-    "user_info_ttl": 300,
-    "group_ttl": 600
+  "metadata": {
+    "timestamp": "2026-02-10T10:30:00Z",
+    "version": "1.0",
+    "ttl": {
+      "value": 60,
+      "unit": "seconds",
+      "expires_at": "2026-02-10T10:31:00Z",
+      "human_readable": "60 seconds"
+    }
   }
 }
 ```
@@ -631,8 +670,20 @@ Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cC...
 **Response**:
 ```json
 {
-  "message": "All caches cleared successfully",
-  "cleared": ["jwks_cache", "admin_token_cache"]
+  "success": true,
+  "message": "Caches cleared successfully",
+  "data": {
+    "message": "All caches cleared successfully",
+    "cleared": ["jwks_cache", "admin_token_cache"],
+    "cache_ttl": {
+      "jwks": "600s (10min)",
+      "admin_token": "300s (5min)"
+    }
+  },
+  "metadata": {
+    "timestamp": "2026-02-10T10:30:00Z",
+    "version": "1.0"
+  }
 }
 ```
 
@@ -761,6 +812,62 @@ curl -H "Authorization: Bearer $TOKEN" \
 ---
 
 ## Response Formats
+
+### Standardized API Response Wrapper
+
+Most API endpoints (except HTML and redirect responses) use a standardized response wrapper format:
+
+**Success Response**:
+```json
+{
+  "success": true,
+  "message": "Operation completed successfully",
+  "data": {
+    // Actual response data here
+  },
+  "metadata": {
+    "timestamp": "2026-02-10T10:30:00Z",
+    "version": "1.0",
+    "ttl": {
+      "value": 300,
+      "unit": "seconds",
+      "expires_at": "2026-02-10T10:35:00Z",
+      "human_readable": "5 minutes"
+    }
+  }
+}
+```
+
+**Response Wrapper Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | boolean | Always `true` for successful responses |
+| `message` | string | Human-readable success message |
+| `data` | object/array | Actual response payload |
+| `metadata` | object | Response metadata |
+| `metadata.timestamp` | string | ISO-8601 timestamp when response was generated |
+| `metadata.version` | string | API version (currently "1.0") |
+| `metadata.ttl` | object | Cache TTL information (optional) |
+| `metadata.ttl.value` | integer | TTL value in seconds |
+| `metadata.ttl.unit` | string | Always "seconds" |
+| `metadata.ttl.expires_at` | string | ISO-8601 timestamp when data expires |
+| `metadata.ttl.human_readable` | string | Human-readable TTL (e.g., "5 minutes") |
+
+**Endpoints Using Wrapper**:
+- `GET /me` - User information
+- `GET /cache/info` - Cache statistics
+- `POST /cache/clear` - Cache clear confirmation
+
+**Endpoints NOT Using Wrapper**:
+- `GET /` - HTML homepage
+- `GET /login` - Redirect to Keycloak
+- `GET /callback` - OAuth callback redirect
+- `GET /logout` - Redirect to Keycloak logout
+- `GET /manager` - HTML dashboard
+- `GET /ceo` - Direct JSON response (no wrapper)
+- `GET /api/data` - Direct JSON response (no wrapper)
+- `GET /health` - Simple status object
+- `POST /refresh` - Direct token response from Keycloak
 
 ### JSON Response
 
