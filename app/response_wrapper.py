@@ -1,18 +1,18 @@
 """
 Response wrapper for consistent API responses across all endpoints.
 
-Provides standardized success and error response formats with metadata.
+Provides standardized success and error response formats with metadata including TTL.
 """
 
 from typing import Any, Optional, Dict
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import status
 from fastapi.responses import JSONResponse
 
 
 class APIResponse:
     """
-    Standardized API response wrapper.
+    Standardized API response wrapper with TTL support.
     
     All API responses follow this structure:
     {
@@ -21,7 +21,12 @@ class APIResponse:
         "error": {...},          # Present on failure
         "metadata": {
             "timestamp": "ISO-8601",
-            "version": "1.0"
+            "version": "1.0",
+            "ttl": {
+                "value": 300,
+                "unit": "seconds",
+                "expires_at": "ISO-8601"
+            }
         }
     }
     """
@@ -31,29 +36,46 @@ class APIResponse:
         data: Any = None,
         message: str = "Success",
         status_code: int = status.HTTP_200_OK,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        ttl: Optional[int] = None
     ) -> JSONResponse:
         """
-        Create a successful response.
+        Create a successful response with optional TTL.
         
         Args:
             data: Response payload
             message: Success message
             status_code: HTTP status code (default: 200)
             metadata: Additional metadata
+            ttl: Time-to-live in seconds (optional)
             
         Returns:
-            JSONResponse with standardized success format
+            JSONResponse with standardized success format including TTL
         """
+        base_metadata = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "version": "1.0",
+        }
+        
+        # Add TTL information if provided
+        if ttl is not None:
+            expires_at = datetime.utcnow() + timedelta(seconds=ttl)
+            base_metadata["ttl"] = {
+                "value": ttl,
+                "unit": "seconds",
+                "expires_at": expires_at.isoformat() + "Z",
+                "human_readable": f"{ttl // 60} minutes" if ttl >= 60 else f"{ttl} seconds"
+            }
+        
+        # Merge with additional metadata
+        if metadata:
+            base_metadata.update(metadata)
+        
         response_data = {
             "success": True,
             "message": message,
             "data": data,
-            "metadata": {
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-                "version": "1.0",
-                **(metadata or {})
-            }
+            "metadata": base_metadata
         }
         
         return JSONResponse(
@@ -154,19 +176,40 @@ class APIResponse:
         )
 
 
-def wrap_response(data: Any, message: str = "Success") -> Dict[str, Any]:
+def wrap_response(
+    data: Any, 
+    message: str = "Success",
+    ttl: Optional[int] = None
+) -> Dict[str, Any]:
     """
-    Simple dict wrapper for responses (when not using JSONResponse directly).
+    Simple dict wrapper for responses with optional TTL (when not using JSONResponse directly).
+    
+    Args:
+        data: Response payload
+        message: Success message
+        ttl: Time-to-live in seconds (optional)
     
     Usage:
-        return wrap_response({"user": user_data}, "User fetched successfully")
+        return wrap_response({"user": user_data}, "User fetched successfully", ttl=300)
     """
+    base_metadata = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "version": "1.0"
+    }
+    
+    # Add TTL information if provided
+    if ttl is not None:
+        expires_at = datetime.utcnow() + timedelta(seconds=ttl)
+        base_metadata["ttl"] = {
+            "value": ttl,
+            "unit": "seconds",
+            "expires_at": expires_at.isoformat() + "Z",
+            "human_readable": f"{ttl // 60} minutes" if ttl >= 60 else f"{ttl} seconds"
+        }
+    
     return {
         "success": True,
         "message": message,
         "data": data,
-        "metadata": {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "version": "1.0"
-        }
+        "metadata": base_metadata
     }
