@@ -1,49 +1,145 @@
 import json
+import base64
+import secrets
+from typing import Dict, Any
+
 from fastapi import APIRouter, Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.exceptions import HTTPException
 import httpx
-from .auth import oauth, require_manager, require_ceo, require_role, require_auth_bearer
+
+from .auth import require_manager, require_ceo, require_role, require_auth_bearer
 from .config import settings
 from .keycloak_admin import get_groups_with_members
+from .response_wrapper import wrap_response
 
 router = APIRouter()
 
+
+# Helper Functions
+def decode_jwt_payload(token: str) -> Dict[str, Any]:
+    """
+    Decode JWT payload without verification (for extracting user info).
+    
+    Args:
+        token: JWT access token
+        
+    Returns:
+        Decoded payload as dictionary
+    """
+    parts = token.split('.')
+    if len(parts) != 3:
+        raise ValueError("Invalid JWT token format")
+    
+    # Decode payload (add padding if needed)
+    payload = parts[1]
+    padding = 4 - len(payload) % 4
+    if padding != 4:
+        payload += '=' * padding
+    
+    decoded_bytes = base64.urlsafe_b64decode(payload)
+    return json.loads(decoded_bytes)
+
+
+async def exchange_code_for_tokens(code: str, redirect_uri: str) -> Dict[str, Any]:
+    """
+    Exchange authorization code for access tokens.
+    
+    Args:
+        code: Authorization code from Keycloak
+        redirect_uri: Callback URI
+        
+    Returns:
+        Token response from Keycloak
+        
+    Raises:
+        HTTPException: If token exchange fails
+    """
+    token_url = f"{settings.KEYCLOAK_SERVER_URL}/realms/{settings.KEYCLOAK_REALM}/protocol/openid-connect/token"
+    
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.post(
+            token_url,
+            data={
+                'grant_type': 'authorization_code',
+                'client_id': settings.KEYCLOAK_CLIENT_ID,
+                'client_secret': settings.KEYCLOAK_CLIENT_SECRET,
+                'code': code,
+                'redirect_uri': redirect_uri,
+            }
+        )
+    
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Token exchange failed: {response.text}"
+        )
+    
+    return response.json()
+
+
+def extract_user_info(token_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract user information from token response.
+    
+    Args:
+        token_data: Token response from Keycloak
+        
+    Returns:
+        User information dictionary
+    """
+    access_token = token_data.get('access_token')
+    if not access_token:
+        return {}
+    
+    decoded = decode_jwt_payload(access_token)
+    
+    return {
+        'sub': decoded.get('sub'),
+        'email': decoded.get('email'),
+        'preferred_username': decoded.get('preferred_username'),
+        'name': decoded.get('name'),
+        'roles': decoded.get('realm_access', {}).get('roles', []),
+        'groups': decoded.get('groups', []),
+        'access_token': access_token,
+        'refresh_token': token_data.get('refresh_token'),
+        'token_type': token_data.get('token_type', 'Bearer'),
+        'expires_in': token_data.get('expires_in'),
+    }
+
+
+# Routes
 @router.get("/", response_class=HTMLResponse)
-async def homepage(request: Request):
+async def homepage(request: Request) -> HTMLResponse:
+    """Homepage with login link or user dashboard."""
     user = request.session.get("user")
 
     if not user:
-        return '<a href="/login">Login with Keycloak</a>'
+        return HTMLResponse('<a href="/login">Login with Keycloak</a>')
 
     roles = user.get("roles", [])
     name = user.get("preferred_username") or user.get("email") or "User"
 
-    menu = ""
-
+    menu_items = []
     if "manager" in roles:
-        menu += '<li><a href="/manager">Manager Dashboard</a></li>'
-
+        menu_items.append('<li><a href="/manager">Manager Dashboard</a></li>')
     if "ceo" in roles:
-        menu += '<li><a href="/ceo">CEO Dashboard</a></li>'
+        menu_items.append('<li><a href="/ceo">CEO Dashboard</a></li>')
+    
+    menu_items.append('<li><a href="/logout">Logout</a></li>')
 
-    return f"""
-    <h1>Welcome, {name}</h1>
-    <p>Roles: {roles}</p>
-    <ul>
-        {menu}
-        <li><a href="/logout">Logout</a></li>
-    </ul>
-    """
+    return HTMLResponse(f"""
+        <h1>Welcome, {name}</h1>
+        <p>Roles: {roles}</p>
+        <ul>{''.join(menu_items)}</ul>
+    """)
+
 
 
 @router.get("/login")
-async def login(request: Request):
-    # Build Keycloak authorization URL manually for reliable redirect
+async def login(request: Request) -> RedirectResponse:
+    """Redirect to Keycloak login page."""
     redirect_uri = str(request.url_for('auth_callback'))
-    
-    # Generate state parameter for CSRF protection
-    import secrets
     state = secrets.token_urlsafe(32)
     request.session['oauth_state'] = state
     
@@ -59,114 +155,78 @@ async def login(request: Request):
     
     return RedirectResponse(url=auth_url, status_code=302)
 
+
 @router.get("/callback", name="auth_callback")
-async def auth_callback(request: Request):
+async def auth_callback(request: Request) -> RedirectResponse:
+    """Handle OAuth callback from Keycloak."""
     try:
-        # Verify state parameter (CSRF protection)
+        # Verify state (CSRF protection)
         state = request.query_params.get('state')
         session_state = request.session.get('oauth_state')
         
         if not state or state != session_state:
-            return HTMLResponse("Auth failed: Invalid state parameter (CSRF protection)", status_code=400)
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid state parameter (CSRF protection)"
+            )
         
-        # Clear the state from session
         request.session.pop('oauth_state', None)
         
         # Get authorization code
         code = request.query_params.get('code')
         if not code:
-            return HTMLResponse("Auth failed: No authorization code received", status_code=400)
-        
-        # Exchange code for tokens
-        token_url = f"{settings.KEYCLOAK_SERVER_URL}/realms/{settings.KEYCLOAK_REALM}/protocol/openid-connect/token"
-        redirect_uri = str(request.url_for('auth_callback'))
-        
-        async with httpx.AsyncClient() as client:
-            token_response = await client.post(
-                token_url,
-                data={
-                    'grant_type': 'authorization_code',
-                    'client_id': settings.KEYCLOAK_CLIENT_ID,
-                    'client_secret': settings.KEYCLOAK_CLIENT_SECRET,
-                    'code': code,
-                    'redirect_uri': redirect_uri,
-                }
+            raise HTTPException(
+                status_code=400,
+                detail="No authorization code received"
             )
         
-        if token_response.status_code != 200:
-            return HTMLResponse(f"Auth failed: Token exchange failed - {token_response.text}", status_code=400)
+        # Exchange code for tokens
+        redirect_uri = str(request.url_for('auth_callback'))
+        token_data = await exchange_code_for_tokens(code, redirect_uri)
         
-        token_data = token_response.json()
-        access_token = token_data.get('access_token')
-        
-        # Decode access token to get user info and roles
-        import base64
-        userinfo = {}
-        
-        if access_token:
-            # Split JWT token (header.payload.signature)
-            parts = access_token.split('.')
-            if len(parts) == 3:
-                # Decode payload (add padding if needed)
-                payload = parts[1]
-                padding = 4 - len(payload) % 4
-                if padding != 4:
-                    payload += '=' * padding
-                
-                # Decode base64
-                decoded_bytes = base64.urlsafe_b64decode(payload)
-                decoded = json.loads(decoded_bytes)
-                
-                # Extract user information
-                userinfo['sub'] = decoded.get('sub')
-                userinfo['email'] = decoded.get('email')
-                userinfo['preferred_username'] = decoded.get('preferred_username')
-                userinfo['name'] = decoded.get('name')
-                
-                # Extract roles from realm_access
-                realm_roles = decoded.get('realm_access', {}).get('roles', [])
-                userinfo['roles'] = realm_roles
-                
-                # Extract groups if present
-                groups = decoded.get('groups', [])
-                userinfo['groups'] = groups
-                
-                # Store token information
-                userinfo['access_token'] = access_token
-                userinfo['refresh_token'] = token_data.get('refresh_token')
-                userinfo['token_type'] = token_data.get('token_type', 'Bearer')
-                userinfo['expires_in'] = token_data.get('expires_in')
-        
+        # Extract and store user info
+        userinfo = extract_user_info(token_data)
         request.session['user'] = userinfo
-        return RedirectResponse(url='/')
+        
+        return RedirectResponse(url='/', status_code=302)
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        return HTMLResponse(f"Auth failed: {e}", status_code=400)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Authentication failed: {str(e)}"
+        )
+
 
 @router.get("/logout")
-async def logout(request: Request):
+async def logout(request: Request) -> RedirectResponse:
+    """Logout user and redirect to Keycloak logout."""
     request.session.pop('user', None)
     
-    # Redirect to Keycloak's logout endpoint
-    logout_url = f"{settings.KEYCLOAK_SERVER_URL}/realms/{settings.KEYCLOAK_REALM}/protocol/openid-connect/logout"
-    redirect_param = str(request.url_for('homepage'))
+    logout_url = (
+        f"{settings.KEYCLOAK_SERVER_URL}/realms/{settings.KEYCLOAK_REALM}"
+        f"/protocol/openid-connect/logout"
+        f"?post_logout_redirect_uri={request.url_for('homepage')}"
+        f"&client_id={settings.KEYCLOAK_CLIENT_ID}"
+    )
     
-    return RedirectResponse(f"{logout_url}?post_logout_redirect_uri={redirect_param}&client_id={settings.KEYCLOAK_CLIENT_ID}")
+    return RedirectResponse(url=logout_url, status_code=302)
+
 
 @router.get("/manager")
-async def manager_dashboard(user: dict = Depends(require_manager)):
-    return HTMLResponse("<h1>Manager Dashboard</h1><p>Welcome, Admin!</p>")
+async def manager_dashboard(user: Dict[str, Any] = Depends(require_manager)) -> HTMLResponse:
+    """Manager dashboard (requires 'manager' role)."""
+    return HTMLResponse("<h1>Manager Dashboard</h1><p>Welcome, Manager!</p>")
+
 
 @router.get("/ceo")
-async def ceo_dashboard(user: dict = Depends(require_ceo)):
+async def ceo_dashboard(user: Dict[str, Any] = Depends(require_ceo)) -> Dict[str, Any]:
     """
     CEO Dashboard - Display teams and employees from Keycloak groups.
-    
-    Returns:
-        - ceo_info: Current CEO's information
-        - teams: List of teams with their members
+    Requires 'ceo' role.
     """
     try:
-        # Fetch all groups with their members
         teams = await get_groups_with_members()
         
         return {
@@ -187,61 +247,21 @@ async def ceo_dashboard(user: dict = Depends(require_ceo)):
 
 
 @router.get("/api/data")
-async def api_data(user: dict = Depends(require_role("manager"))):
-    """Example API endpoint protected by bearer token or session requiring 'manager' role."""
-    return {"data": "sensitive-data", "user": user.get("preferred_username")}
+async def api_data(user: Dict[str, Any] = Depends(require_role("manager"))) -> Dict[str, Any]:
+    """Example protected API endpoint (requires 'manager' role)."""
+    return {
+        "data": "sensitive-data",
+        "user": user.get("preferred_username")
+    }
+
 
 
 @router.get("/me")
-async def get_current_user(user: dict = Depends(require_auth_bearer)):
+async def get_current_user(user: Dict[str, Any] = Depends(require_auth_bearer)) -> Dict[str, Any]:
     """
-    Get current authenticated user's details with access token information.
-    
-    This endpoint is called by the frontend to display user info in the app shell.
-    It works with both session cookies (browser login) and bearer tokens (API calls).
-    
-    Returns:
-    - sub: Unique user ID from Keycloak
-    - email: User's email address
-    - preferred_username: Username/login name
-    - name: Full name (if available)
-    - roles: List of realm roles assigned to user
-    - groups: List of groups user belongs to
-    - token_info: Access token information (if available)
-    - metadata.ttl: Cache TTL information (5 minutes)
-    
-    Example response:
-    {
-        "success": true,
-        "message": "User information retrieved successfully",
-        "data": {
-            "sub": "user-uuid-123",
-            "email": "john@example.com",
-            "preferred_username": "john.smith",
-            "name": "John Smith",
-            "roles": ["manager", "user"],
-            "groups": ["sales-team"],
-            "token_info": {
-                "token_type": "Bearer",
-                "expires_in": 900,
-                "access_token": "eyJhbGciOiJSUzI1NiIsInR5cC...",
-                "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cC..."
-            }
-        },
-        "metadata": {
-            "timestamp": "2024-02-10T10:30:00Z",
-            "version": "1.0",
-            "ttl": {
-                "value": 300,
-                "unit": "seconds",
-                "expires_at": "2024-02-10T10:35:00Z",
-                "human_readable": "5 minutes"
-            }
-        }
-    }
+    Get current authenticated user's details with token information.
+    Works with both session cookies and bearer tokens.
     """
-    from .response_wrapper import wrap_response
-    
     user_data = {
         "sub": user.get("sub"),
         "email": user.get("email"),
@@ -260,7 +280,6 @@ async def get_current_user(user: dict = Depends(require_auth_bearer)):
             "refresh_token": user.get("refresh_token"),
         }
     
-    # Return with TTL (user info cached for 5 minutes)
     return wrap_response(
         user_data,
         message="User information retrieved successfully",
@@ -269,51 +288,11 @@ async def get_current_user(user: dict = Depends(require_auth_bearer)):
 
 
 @router.get("/token")
-async def get_token_info(user: dict = Depends(require_auth_bearer)):
+async def get_token_info(user: Dict[str, Any] = Depends(require_auth_bearer)) -> Dict[str, Any]:
     """
-    Get access token information for the current user.
-    
-    This endpoint returns the access token and refresh token that can be used
-    for API calls. Useful for:
-    - Frontend applications that need to make API calls
-    - Mobile apps that need to store tokens
-    - Debugging authentication issues
-    
-    Returns:
-    - access_token: JWT access token
-    - refresh_token: Refresh token for getting new access tokens
-    - token_type: Always "Bearer"
-    - expires_in: Token lifetime in seconds
-    - user: Basic user information
-    
-    Example response:
-    {
-        "success": true,
-        "message": "Token information retrieved successfully",
-        "data": {
-            "access_token": "eyJhbGciOiJSUzI1NiIsInR5cC...",
-            "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cC...",
-            "token_type": "Bearer",
-            "expires_in": 900,
-            "user": {
-                "sub": "user-uuid",
-                "preferred_username": "john.smith",
-                "email": "john@example.com"
-            }
-        },
-        "metadata": {
-            "timestamp": "2024-02-10T10:30:00Z",
-            "version": "1.0"
-        }
-    }
-    
-    Security Note:
-    - Store tokens securely (httpOnly cookies or secure storage)
-    - Never expose tokens in URLs or logs
-    - Use HTTPS in production
+    Get access token information for API calls.
+    Returns tokens and basic user info.
     """
-    from .response_wrapper import wrap_response
-    
     token_data = {
         "access_token": user.get("access_token"),
         "refresh_token": user.get("refresh_token"),
@@ -327,45 +306,20 @@ async def get_token_info(user: dict = Depends(require_auth_bearer)):
         }
     }
     
-    # No TTL for token endpoint (tokens have their own expiration)
     return wrap_response(
         token_data,
         message="Token information retrieved successfully"
     )
 
 
+
 @router.post("/refresh")
-async def refresh_token(request: Request):
+async def refresh_token(request: Request) -> Dict[str, Any]:
     """
-    Securely refresh an expired access token using a refresh token.
-    
-    This endpoint is called by the frontend when the access token expires (401).
-    The frontend sends the refresh_token (obtained during login), and this endpoint
-    exchanges it for a new access_token.
-    
-    SECURITY: The client_secret is kept on the backend (never exposed to frontend).
-    This is more secure than frontend calling Keycloak directly.
-    
-    Request body:
-    {
-        "refresh_token": "long-lived-token-from-login"
-    }
-    
-    Returns:
-    {
-        "access_token": "new-short-lived-token",
-        "refresh_token": "new-or-same-refresh-token",
-        "expires_in": 900,  # 15 minutes in seconds
-        "token_type": "Bearer"
-    }
-    
-    Usage (Frontend):
-    1. Store refresh_token securely after login
-    2. When access_token expires (401 response), call this endpoint
-    3. Use returned access_token for subsequent API calls
+    Refresh an expired access token using a refresh token.
+    Client secret is kept secure on backend.
     """
     try:
-        # Parse request body
         body = await request.json()
         refresh_token_value = body.get("refresh_token")
         
@@ -375,7 +329,6 @@ async def refresh_token(request: Request):
                 detail="refresh_token required in request body"
             )
         
-        # Call Keycloak token endpoint to exchange refresh token for new access token
         token_url = f"{settings.KEYCLOAK_SERVER_URL}/realms/{settings.KEYCLOAK_REALM}/protocol/openid-connect/token"
         
         async with httpx.AsyncClient(timeout=10) as client:
@@ -384,19 +337,17 @@ async def refresh_token(request: Request):
                 data={
                     "grant_type": "refresh_token",
                     "client_id": settings.KEYCLOAK_CLIENT_ID,
-                    "client_secret": settings.KEYCLOAK_CLIENT_SECRET,  # Secure: backend only!
+                    "client_secret": settings.KEYCLOAK_CLIENT_SECRET,
                     "refresh_token": refresh_token_value,
                 },
             )
         
-        # Handle Keycloak errors (invalid refresh token, expired, etc.)
         if response.status_code != 200:
             raise HTTPException(
                 status_code=401,
                 detail="Token refresh failed: invalid or expired refresh_token"
             )
         
-        # Return new tokens to frontend
         return response.json()
     
     except HTTPException:
@@ -409,31 +360,19 @@ async def refresh_token(request: Request):
 
 
 @router.get("/health")
-async def health_check():
-    """
-    Health check endpoint for Docker/Kubernetes readiness probes.
-    
-    Returns:
-        Simple status object indicating service is running
-    """
+async def health_check() -> Dict[str, str]:
+    """Health check endpoint for monitoring."""
     return {"status": "ok"}
 
 
 @router.get("/cache/info")
-async def cache_info(user: dict = Depends(require_role("admin"))):
+async def cache_info(user: Dict[str, Any] = Depends(require_role("admin"))) -> Dict[str, Any]:
     """
-    Get cache statistics for monitoring and debugging.
-    
-    Requires 'admin' role.
-    
-    Returns:
-        Cache configuration and current state for all caches with TTL information:
-        - JWKS cache (JWT validation)
-        - Admin token cache (Keycloak Admin API)
+    Get cache statistics (requires 'admin' role).
+    Returns cache configuration and current state.
     """
     from .jwt_utils import get_cache_info as get_jwt_cache_info
     from .keycloak_admin import get_cache_info as get_admin_cache_info
-    from .response_wrapper import wrap_response
     
     cache_data = {
         "jwt_cache": get_jwt_cache_info(),
@@ -450,7 +389,6 @@ async def cache_info(user: dict = Depends(require_role("admin"))):
         }
     }
     
-    # Return with TTL metadata (cache info itself has TTL of 60 seconds)
     return wrap_response(
         cache_data,
         message="Cache information retrieved successfully",
@@ -459,23 +397,13 @@ async def cache_info(user: dict = Depends(require_role("admin"))):
 
 
 @router.post("/cache/clear")
-async def clear_caches(user: dict = Depends(require_role("admin"))):
+async def clear_caches(user: Dict[str, Any] = Depends(require_role("admin"))) -> Dict[str, Any]:
     """
-    Clear all caches (JWKS, admin token).
-    
-    Requires 'admin' role.
-    
-    Useful for:
-    - Testing
-    - Forcing fresh data fetch
-    - After Keycloak configuration changes
-    
-    Returns:
-        Confirmation message with TTL information
+    Clear all caches (requires 'admin' role).
+    Useful for testing or after Keycloak configuration changes.
     """
     from .jwt_utils import clear_jwks_cache
     from .keycloak_admin import clear_admin_token_cache
-    from .response_wrapper import wrap_response
     
     clear_jwks_cache()
     clear_admin_token_cache()
@@ -489,7 +417,6 @@ async def clear_caches(user: dict = Depends(require_role("admin"))):
         }
     }
     
-    # Return with no TTL (immediate action)
     return wrap_response(
         result,
         message="Caches cleared successfully"

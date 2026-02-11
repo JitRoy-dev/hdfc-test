@@ -1,7 +1,6 @@
 fastapi
 uvicorn
 gunicorn
-authlib
 httpx
 python-dotenv
 pydantic-settings
